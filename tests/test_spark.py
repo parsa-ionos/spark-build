@@ -11,6 +11,7 @@ import dcos.config
 import dcos.http
 import dcos.package
 
+import dcosjob
 import logging
 import os
 import pytest
@@ -35,19 +36,23 @@ DEFAULT_HDFS_TASK_COUNT=10
 HDFS_PACKAGE_NAME='beta-hdfs'
 HDFS_SERVICE_NAME='hdfs'
 SPARK_PACKAGE_NAME='spark'
+TERASORT_JAR='https://downloads.mesosphere.io/spark/examples/spark-terasort-1.0-jar-with-dependencies_2.11.jar'
+TERASORT_MAX_EXECUTOR_CORES=6
 
 
 def setup_module(module):
     if _hdfs_enabled():
         _require_hdfs()
     _require_spark()
+    _require_spark_cli()
 
 
 def teardown_module(module):
-    shakedown.uninstall_package_and_wait(SPARK_PACKAGE_NAME)
-    if _hdfs_enabled():
-        shakedown.uninstall_package_and_wait(HDFS_PACKAGE_NAME, HDFS_SERVICE_NAME)
-        _run_janitor(HDFS_PACKAGE_NAME)
+    if _do_teardown():
+        shakedown.uninstall_package_and_wait(SPARK_PACKAGE_NAME)
+        if _hdfs_enabled():
+            shakedown.uninstall_package_and_wait(HDFS_PACKAGE_NAME, HDFS_SERVICE_NAME)
+            _run_janitor(HDFS_SERVICE_NAME)
 
 
 @pytest.mark.sanity
@@ -66,11 +71,53 @@ def test_jar():
 @pytest.mark.sanity
 def test_teragen():
     if _hdfs_enabled():
-        jar_url = "https://downloads.mesosphere.io/spark/examples/spark-terasort-1.0-jar-with-dependencies_2.11.jar"
-        _run_tests(jar_url,
-                   "1g hdfs:///terasort_in",
-                   "Number of records written",
-                   ["--class", "com.github.ehiggs.spark.terasort.TeraGen"])
+        _run_teragen()
+
+
+def _run_teragen():
+    jar_url = TERASORT_JAR
+    input_size = os.getenv('TERASORT_INPUT_SIZE', '1g')
+    _run_tests(jar_url,
+               "{} hdfs:///terasort_in".format(input_size),
+               "Number of records written",
+               ["--class", "com.github.ehiggs.spark.terasort.TeraGen",
+                "--conf", "spark.cores.max={}".format(TERASORT_MAX_EXECUTOR_CORES)])
+
+
+@pytest.mark.soak
+def test_terasort():
+    if _hdfs_enabled():
+        _delete_hdfs_terasort_files()
+        _run_teragen()
+        _run_terasort()
+        _run_teravalidate()
+
+
+def _run_terasort():
+    jar_url = TERASORT_JAR
+    _run_tests(jar_url,
+               "hdfs:///terasort_in hdfs:///terasort_out",
+               "",
+               ["--class", "com.github.ehiggs.spark.terasort.TeraSort",
+                "--conf", "spark.cores.max={}".format(TERASORT_MAX_EXECUTOR_CORES)])
+
+
+def _run_teravalidate():
+    jar_url = TERASORT_JAR
+    _run_tests(jar_url,
+               "hdfs:///terasort_out hdfs:///terasort_validate",
+               "partitions are properly sorted",
+               ["--class", "com.github.ehiggs.spark.terasort.TeraValidate",
+                "--conf", "spark.cores.max={}".format(TERASORT_MAX_EXECUTOR_CORES)])
+
+
+def _delete_hdfs_terasort_files():
+    job_name = 'hdfs-delete-terasort-files'
+    LOGGER.info("Deleting hdfs terasort files by running job {}".format(job_name))
+    dcosjob.add_job(job_name)
+    dcosjob.run_job(job_name, timeout_seconds=300)
+    dcosjob.remove_job(job_name)
+    LOGGER.info("Job {} completed".format(job_name))
 
 
 @pytest.mark.sanity
@@ -167,6 +214,17 @@ def _require_spark():
 
     _require_package(SPARK_PACKAGE_NAME, _get_spark_options())
     _wait_for_spark()
+
+
+def _require_spark_cli():
+    LOGGER.info("Ensuring Spark CLI is installed.")
+    installed_subcommands = dcos.package.installed_subcommands()
+    if any(sub.name == SPARK_PACKAGE_NAME for sub in installed_subcommands):
+        LOGGER.info("Spark CLI already installed.")
+    else:
+        LOGGER.info("Installing Spark CLI.")
+        shakedown.run_dcos_command('package install --cli {}'.format(
+            SPARK_PACKAGE_NAME))
 
 
 # This should be in shakedown (DCOS_OSS-679)
@@ -315,3 +373,6 @@ def _task_log(task_id):
     LOGGER.info("Running {}".format(cmd))
     stdout = subprocess.check_output(cmd, shell=True).decode('utf-8')
     return stdout
+
+def _do_teardown():
+    return os.environ.get("DO_TEARDOWN") != "false"
