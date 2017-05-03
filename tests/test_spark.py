@@ -7,32 +7,24 @@
 #   TEST_JAR_PATH // /path/to/mesos-spark-integration-tests.jar
 #   SCALA_TEST_JAR_PATH // /path/to/dcos-spark-scala-tests.jar
 
-import dcos.config
-import dcos.http
-import dcos.package
-
 import logging
 import os
 import pytest
 import s3
 import shakedown
-import urllib
 
 import utils
-from utils import SPARK_PACKAGE_NAME
+from utils import SPARK_PACKAGE_NAME, HDFS_PACKAGE_NAME, HDFS_SERVICE_NAME
 
 
 LOGGER = logging.getLogger(__name__)
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_HDFS_TASK_COUNT=10
-HDFS_PACKAGE_NAME='beta-hdfs'
-HDFS_SERVICE_NAME='hdfs'
 
 
 def setup_module(module):
     if utils.hdfs_enabled():
-        _require_hdfs()
-    _require_spark()
+        utils.require_hdfs()
+    utils.require_spark()
 
 
 def teardown_module(module):
@@ -141,108 +133,6 @@ def test_s3():
                args)
 
     assert len(list(s3.list("linecount-out"))) > 0
-
-
-def _require_hdfs():
-    LOGGER.info("Ensuring HDFS is installed.")
-
-    _require_package(HDFS_PACKAGE_NAME, _get_hdfs_options())
-    _wait_for_hdfs()
-
-
-def _require_spark():
-    LOGGER.info("Ensuring Spark is installed.")
-
-    _require_package(SPARK_PACKAGE_NAME, _get_spark_options())
-    _wait_for_spark()
-
-
-# This should be in shakedown (DCOS_OSS-679)
-def _require_package(pkg_name, options = {}):
-    pkg_manager = dcos.package.get_package_manager()
-    installed_pkgs = dcos.package.installed_packages(pkg_manager, None, None, False)
-
-    if any(pkg['name'] == pkg_name for pkg in installed_pkgs):
-        LOGGER.info("Package {} already installed.".format(pkg_name))
-    else:
-        LOGGER.info("Installing package {}".format(pkg_name))
-        shakedown.install_package(
-            pkg_name,
-            options_json=options,
-            wait_for_completion=True)
-
-
-def _wait_for_spark():
-    def pred():
-        dcos_url = dcos.config.get_config_val("core.dcos_url")
-        spark_url = urllib.parse.urljoin(dcos_url, "/service/spark")
-        status_code = dcos.http.get(spark_url).status_code
-        return status_code == 200
-
-    shakedown.wait_for(pred)
-
-
-def _get_hdfs_options():
-    if utils.is_strict():
-        options = {'service': {'principal': 'service-acct', 'secret_name': 'secret'}}
-    else:
-        options = {"service": {}}
-
-    options["service"]["beta-optin"] = True
-    return options
-
-
-def _wait_for_hdfs():
-    shakedown.wait_for(_is_hdfs_ready, ignore_exceptions=False, timeout_seconds=900)
-
-
-def _is_hdfs_ready(expected_tasks = DEFAULT_HDFS_TASK_COUNT):
-    running_tasks = [t for t in shakedown.get_service_tasks(HDFS_SERVICE_NAME) \
-                     if t['state'] == 'TASK_RUNNING']
-    return len(running_tasks) >= expected_tasks
-
-
-def _get_spark_options():
-    if utils.hdfs_enabled():
-        options = {"hdfs":
-                   {"config-url":
-                    "http://api.hdfs.marathon.l4lb.thisdcos.directory/v1/endpoints"}}
-    else:
-        options = {}
-
-    if utils.is_strict():
-        options.update({'service':
-                        {"principal": "service-acct"},
-                        "security":
-                        {"mesos":
-                         {"authentication":
-                          {"secret_name": "secret"}}}})
-
-    return options
-
-
-def _install_spark():
-    options = {"hdfs":
-               {"config-url":
-                "http://api.hdfs.marathon.l4lb.thisdcos.directory/v1/endpoints"}}
-
-    if utils.is_strict():
-        options['service'] = {"user": "nobody",
-                              "principal": "service-acct"}
-        options['security'] = {"mesos": {"authentication": {"secret_name": "secret"}}}
-
-    shakedown.install_package(
-        SPARK_PACKAGE_NAME,
-        options_json=options,
-        wait_for_completion=True)
-
-    def pred():
-        dcos_url = dcos.config.get_config_val("core.dcos_url")
-        spark_url = urllib.parse.urljoin(dcos_url, "/service/spark")
-        status_code = dcos.http.get(spark_url).status_code
-        return status_code == 200
-
-    shakedown.spinner.wait_for(pred)
 
 
 def _run_janitor(service_name):

@@ -7,7 +7,6 @@ import pytest
 import shakedown
 
 import utils
-from utils import SPARK_PACKAGE_NAME
 
 
 LOGGER = logging.getLogger(__name__)
@@ -16,7 +15,7 @@ TERASORT_MAX_CORES=6
 
 
 def setup_module(module):
-    _require_spark_cli()
+    utils.require_spark()
 
 
 @pytest.mark.soak
@@ -26,17 +25,6 @@ def test_terasort():
         _run_teragen()
         _run_terasort()
         _run_teravalidate()
-
-
-def _require_spark_cli():
-    LOGGER.info("Ensuring Spark CLI is installed.")
-    installed_subcommands = dcos.package.installed_subcommands()
-    if any(sub.name == SPARK_PACKAGE_NAME for sub in installed_subcommands):
-        LOGGER.info("Spark CLI already installed.")
-    else:
-        LOGGER.info("Installing Spark CLI.")
-        shakedown.run_dcos_command('package install --cli {}'.format(
-            SPARK_PACKAGE_NAME))
 
 
 def _run_teragen():
